@@ -74,7 +74,7 @@ HLS_ODC_STAC_CONFIG = {
             "blue": "B02",
             "green": "B03",
             "red": "B04",
-            "nir_narrow": "B05",
+            "nir": "B05",
             "swir_1": "B06",
             "swir_2": "B07",
             "cirrus": "B09",
@@ -102,7 +102,7 @@ HLS_ODC_STAC_CONFIG = {
             "red_edge_2": "B06",
             "red_edge_3": "B07",
             "nir_broad": "B08",
-            "nir_narrow": "B8A",
+            "nir": "B8A",
             "water_vapor": "B09",
             "cirrus": "B10",
             "swir_1": "B11",
@@ -112,7 +112,7 @@ HLS_ODC_STAC_CONFIG = {
 }
 
 # these are the ones that we are going to use
-DEFAULT_BANDS = ["red", "green", "blue", "nir_narrow", "swir_1", "swir_2"]
+DEFAULT_BANDS = ["red", "green", "blue", "nir", "swir_1", "swir_2"]
 DEFAULT_RESOLUTION = 30
 
 def mask_and_scale(stack, bands):
@@ -130,6 +130,13 @@ def mask_and_scale(stack, bands):
     cloud_free = stack[bands].where(mask).where(stack != NODATA) * scale
 
     return cloud_free
+
+def max_ndvi_composite(stack):
+    ndvi = (stack.nir - stack.red) / (stack.nir + stack.red)
+    valid_ndvi = ndvi.notnull().any(dim='time')
+    idx = ndvi.fillna(NODATA).argmax(dim='time').compute()
+    comp = stack.isel(time=idx).where(valid_ndvi).fillna(NODATA).compute()
+    return comp
 
 DUCKDB_EXTENSION_DIRECTORY = Path(os.environ["HOME"]) / "duckdb-extensions"
 
