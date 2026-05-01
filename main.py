@@ -237,7 +237,8 @@ def filter_cloud(items, lim=90, start=0, inc=5, n=100):
 
 
 def get_stac_items(
-    bbox: BBox, start_datetime: datetime, end_datetime: datetime, crs: CRS
+    bbox: BBox, start_datetime: datetime, end_datetime: datetime, crs: CRS,
+    lim: int = None
 ) -> list[Item]:
     logger.info("querying HLS archive")
     client = DuckdbClient(
@@ -286,8 +287,12 @@ def get_stac_items(
         )
 
     logger.info(f"found {len(items)} items")
+    all_items = [Item.from_dict(item) for item in items]
 
-    return [Item.from_dict(item) for item in items]
+    if lim:
+        return filter_cloud(all_items, n=lim)
+
+    return all_items
 
 
 async def run(
@@ -299,13 +304,15 @@ async def run(
     bands: list[str] = DEFAULT_BANDS,
     resolution: int | float = DEFAULT_RESOLUTION,
     direct_bucket_access: bool = False,
-    composite_fun = median_composite
+    composite_fun = median_composite,
+    lim: int = None
 ):
     items = get_stac_items(
         bbox=bbox,
         start_datetime=start_datetime,
         end_datetime=end_datetime,
         crs=crs,
+        lim=lim
     )
 
     rasterio_env = {}
@@ -357,6 +364,7 @@ async def run(
         groupby=group_by_sensor_and_date,
         geobox=GeoBox.from_bbox(bbox=bbox, crs=crs, resolution=resolution, tight=True),
     ).sortby("time")
+    logger.info(f"{stack.info()}\n{stack.chunk()}")
 
 
     cloud_free = mask_and_scale(stack, bands)
@@ -479,6 +487,14 @@ if __name__ == "__main__":
         required=False,
         type=str,
     )
+    parse.add_argument(
+        "--lim",
+        help="Limit the number of stac items",
+        required=False,
+        type=int,
+        default=None
+    )
+
     args = parse.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -508,6 +524,7 @@ if __name__ == "__main__":
     logging.info(
         f"running {args.composite_type} composite with start_datetime: {start_datetime} "
         f"end_datetime: {end_datetime}, bbox: {bbox}, crs: {crs}, output_dir: {output_dir}"
+        f"lim: {args.lim}"
     )
 
     # Retry loop for handling intermittent failures
@@ -524,7 +541,8 @@ if __name__ == "__main__":
                     crs=crs,
                     output_dir=output_dir,
                     direct_bucket_access=args.direct_bucket_access,
-                    composite_fun=composite_fun
+                    composite_fun=composite_fun,
+                    lim=args.lim
                 )
             )
             logging.info("Successfully completed processing")
