@@ -218,6 +218,23 @@ def group_by_sensor_and_date(
 
     return f"{sensor}_{day}"
 
+def filter_cloud(items, lim=90, start=0, inc=5, n=100):
+    ''' start at eo:cloud_cover=start, increment by inc
+    until n items are found or lim is reached'''
+    stats = dict()
+    for cc in range(start, lim+inc, inc):
+        filtered_items = [i for i in items
+                          if i.properties['eo:cloud_cover'] < cc]
+        stats[cc] = len(filtered_items)
+        if len(filtered_items) >= n:
+            break
+
+    logger.info(
+        f'returning {len(filtered_items)} at eo_cloud_cover {cc} '
+        f'cc stats: {stats}'
+    )
+    return filtered_items
+
 
 def get_stac_items(
     bbox: BBox, start_datetime: datetime, end_datetime: datetime, crs: CRS
