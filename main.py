@@ -115,6 +115,20 @@ HLS_ODC_STAC_CONFIG = {
 # these are the ones that we are going to use
 DEFAULT_BANDS = ["red", "green", "blue", "nir", "swir_1", "swir_2"]
 DEFAULT_RESOLUTION = 30
+INDEX_FUNS = {
+    'ndvi': lambda s: (s.nir - s.red) / (s.nir + s.red),
+    'savi': lambda s: (s.nir - s.red) / (s.nir + s.red + 0.5) * 1.5,
+    'msavi':lambda s: (2 * s.nir + 1 - ((2 * s.nir + 1)**2 - 8 * (s.nir - s.red))**0.5) / 2,
+
+    'evi': lambda s: 2.5 * (s.nir - s.red) / (s.nir + 6 * s.red - 7.5 * s.blue + 1),
+    'evi2': lambda s: 2.5 * (s.nir - s.red) / (s.nir + 2.4 * s.red + 1),
+
+    'ndmi':lambda s: (s.nir - s.swir_1) / (s.nir + s.swir_1),
+    'ndsi':lambda s: (s.green - s.swir_1) / (s.green + s.swir_1),
+
+    'nbr': lambda s: (s.nir - s.swir_2) / (s.nir + s.swir_2),
+    'nbr2': lambda s: (s.swir_1 - s.swir_2) / (s.swir_1 + s.swir_2),
+}
 
 def mask_and_scale(stack, bands):
     """
@@ -128,7 +142,9 @@ def mask_and_scale(stack, bands):
     aero_mask = (stack.Fmask & high_aero_bitmask) != high_aero_bitmask
     range_mask = (stack[bands] != NODATA) & (stack[bands] > 0) & (stack[bands] < 10000)
     mask = mask & aero_mask & range_mask
-    cloud_free = stack[bands].where(mask).where(stack != NODATA) * scale
+    cloud_free = stack[bands].where(mask).where(stack[bands] != NODATA) * scale
+    cloud_free['Fmask'] = stack.Fmask.where(stack.Fmask != FMASK_NODATA, NODATA).astype('float32')
+    cloud_free['Fmask'].attrs.pop('nodata', None)
 
     return cloud_free
 
@@ -141,26 +157,32 @@ def max_ndvi_composite(stack):
 
 def quantile_ndvi_composite(stack, q):
     ndvi = (stack.nir - stack.red) / (stack.nir + stack.red)
-    valid_ndvi = ndvi.notnull().any(dim='time')
-
-    quant = ndvi.quantile(q, dim='time', skipna=True).fillna(NODATA)
-    idx = abs(ndvi - quant).argmin(dim='time').compute()
-    comp = stack.isel(time=idx).where(valid_ndvi).fillna(NODATA).compute()
-    return comp
+    quant = ndvi.quantile(q, dim='time', skipna=True)
+    idx = abs(ndvi - quant).fillna(1e6).argmin(dim='time').compute()
+    comp = stack.isel(time=idx).fillna(NODATA).compute()
+    return comp, idx
 
 def median_composite(stack):
     return stack.median(dim="time", skipna=True).fillna(NODATA).compute()
 
-def which_composite_function(composite_type, q):
-    choice = {
-        'maxndvi': max_ndvi_composite,
-        'median': median_composite,
-        'qndvi': partial(quantile_ndvi_composite, q=q)
-    }
-    if composite_type not in choice.keys():
-        raise KeyError(f'composite type must be one of {choice.keys()}, not {composite_type}')
+def calculate_composite(stack, indices_to_add, method, q):
+    if method in ('qndvi', 'maxndvi'):
+        q = 1 if method == 'maxndvi' else q
+        comp, idx = quantile_ndvi_composite(stack, q)
+        comp['doy'] = stack.time.isel(time=idx).dt.dayofyear.astype('float32')
+        comp['Fmask'] = stack.Fmask.isel(time=idx)
+        for k in indices_to_add:
+            comp[k] = INDEX_FUNS[k](stack).isel(time=idx)
 
-    return choice[composite_type]
+    elif method == 'median':
+         # median Fmask doesn't make sense
+        stack = stack.drop_vars('Fmask')
+        comp = stack.median(dim="time", skipna=True)
+        for k in indices_to_add:
+            comp[k] = INDEX_FUNS[k](stack).median(dim="time", skipna=True)
+
+    return comp.fillna(NODATA).compute()
+
 
 DUCKDB_EXTENSION_DIRECTORY = Path(os.environ["HOME"]) / "duckdb-extensions"
 
@@ -375,7 +397,13 @@ def write_multiband_raster(composite, output_dir, output_name):
         composite[band].rio.set_nodata(NODATA, inplace=True)
         composite[band].rio.write_nodata(NODATA, encoded=True, inplace=True)
 
-    composite.rio.to_raster(
+    ordered_bands = ['blue', 'green', 'red', 'nir', 'swir_1', 'swir_2',
+                     'nbr', 'Fmask']
+
+    select_bands = [x for x in ordered_bands if x in composite.data_vars]
+    select_bands += [x for x in composite.data_vars if x not in ordered_bands]
+
+    composite[select_bands].rio.to_raster(
         output_dir / output_name,
         driver="COG",
         compress="DEFLATE",
@@ -393,10 +421,12 @@ async def run(
     bands: list[str] = DEFAULT_BANDS,
     resolution: int | float = DEFAULT_RESOLUTION,
     direct_bucket_access: bool = False,
-    composite_fun = median_composite,
+    method: str = 'median',
+    q: float = 0.98,
     lim: int = None,
     catalog: bool = False,
-    output_name: str = None
+    output_name: str = None,
+    indices: list[str] = None,
 ):
     items = get_stac_items(
         bbox=bbox,
@@ -458,10 +488,12 @@ async def run(
     logger.info(f"{stack.info()}\n{stack.chunk()}")
 
 
-    cloud_free = mask_and_scale(stack, bands)
+    stack = mask_and_scale(stack, bands)
 
     logger.info("computing composite values")
-    composite = composite_fun(cloud_free)
+    composite = calculate_composite(stack, indices if indices else [], method, q)
+
+
     if catalog:
         write_assets_and_catalog(
             bands,
@@ -552,6 +584,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False
     )
+    parse.add_argument(
+        "--indices",
+        help=(f"space separated list of any of {INDEX_FUNS.keys()}"),
+        required=False,
+        nargs='*',
+        type=str,
+        default=[]
+    )
+
 
     args = parse.parse_args()
 
@@ -575,18 +616,18 @@ if __name__ == "__main__":
 
     start_datetime = parse_datetime_utc(args.start_datetime)
     end_datetime = parse_datetime_utc(args.end_datetime)
-    composite_fun = which_composite_function(args.composite_type, q=args.q)
+    if args.composite_type not in ('maxndvi', 'qndvi', 'median'):
+        raise ValueError('composite_type must be one of maxndvi, qndvi, median')
+
+    if not set(args.indices) <= INDEX_FUNS.keys():
+        raise ValueError(f'--indices must be a subset of {INDEX_FUNS.keys()}')
 
     logging.info(
         f"setting GDAL config environment variables:\n{json.dumps(GDAL_CONFIG, indent=2)}"
     )
     os.environ.update(GDAL_CONFIG)
 
-    logging.info(
-        f"running {args.composite_type} composite with start_datetime: {start_datetime} "
-        f"end_datetime: {end_datetime}, bbox: {bbox}, crs: {crs}, output_dir: {output_dir}"
-        f"lim: {args.lim}"
-    )
+    logging.info(f'{args}')
 
     # Retry loop for handling intermittent failures
     max_retries = 3
@@ -602,10 +643,12 @@ if __name__ == "__main__":
                     crs=crs,
                     output_dir=output_dir,
                     direct_bucket_access=args.direct_bucket_access,
-                    composite_fun=composite_fun,
+                    method=args.composite_type,
+                    q=args.q,
                     lim=args.lim,
                     catalog=args.catalog,
-                    output_name=args.output_name
+                    output_name=args.output_name,
+                    indices=args.indices,
                 )
             )
             logging.info("Successfully completed processing")

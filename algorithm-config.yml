@@ -49,6 +49,10 @@ inputs:
     description: Build catolog of composite assets, mutually exclusive with output_name
     name: catalog
     required: false
+  - default: ''
+    description: list of space separated indices (lower case), e.g, ndvi, nbr, evi, ...
+    name: indices
+    required: false
 
 
 queue: maap-dps-worker-16gb

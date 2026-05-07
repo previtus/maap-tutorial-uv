@@ -47,6 +47,7 @@ args=(
 [[ -n "${8}" ]] && args+=(--q "${8}")
 [[ -n "${9}" ]] && args+=(--lim "${9}")
 [[ -n "${10}" ]] && args+=(--catalog)
+[[ -n "${11}" ]] && args+=(--indices ${11})
 
 export UV_PROJECT="${basedir}"
 
