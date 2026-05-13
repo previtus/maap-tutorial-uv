@@ -46,6 +46,11 @@ GDAL_CONFIG = {
     "VSI_CACHE": "TRUE",
     "VSI_CACHE_SIZE": "536870912",
     "GDAL_NUM_THREADS": "ALL_CPUS",
+    # micro scale retries
+    "GDAL_HTTP_MAX_RETRY": "5",
+    "GDAL_HTTP_RETRY_DELAY": "3",
+    # 1MB chunks to send fewer http requests for large tiles
+    "CPL_VSIL_CURL_CHUNK_SIZE": "1048576",
     # "CPL_DEBUG": "ON" if debug else "OFF",
     # "CPL_CURL_VERBOSE": "YES" if debug else "NO",
 }
@@ -449,6 +454,13 @@ async def run(
                 "aws_secret_access_key": creds["secretAccessKey"],
                 "aws_session_token": creds["sessionToken"],
                 "region_name": "us-west-2",
+            },
+            gdal_opts={
+                "GDAL_HTTP_MAX_RETRY": 5,
+                "GDAL_HTTP_RETRY_DELAY": 2,
+                "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
+                "GDAL_HTTP_MULTIPLEX": "YES",
+                "CPL_VSIL_CURL_CHUNK_SIZE": 1048576,
             },
         )
         rasterio_env["session"] = AWSSession(
