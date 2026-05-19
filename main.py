@@ -45,7 +45,7 @@ GDAL_CONFIG = {
     "PYTHONWARNINGS": "ignore",
     "VSI_CACHE": "TRUE",
     "VSI_CACHE_SIZE": "536870912",
-    "GDAL_NUM_THREADS": "ALL_CPUS",
+    "GDAL_NUM_THREADS": "1",
     # micro scale retries
     "GDAL_HTTP_MAX_RETRY": "5",
     "GDAL_HTTP_RETRY_DELAY": "3",
