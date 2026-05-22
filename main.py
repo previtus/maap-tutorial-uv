@@ -1,5 +1,6 @@
 """Create a cloud-free composite image from a temporal mosaic of HLS granules"""
 
+import math
 import argparse
 import asyncio
 import json
@@ -8,7 +9,6 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from functools import partial
 from typing import Tuple
 
 import odc.stac
@@ -19,6 +19,7 @@ from odc.geo.geobox import GeoBox
 from odc.stac import ParsedItem
 from pyproj import CRS
 from pystac import Asset, Catalog, CatalogType, Item, MediaType
+from pystac.extensions.projection import ProjectionExtension
 from rasterio.session import AWSSession
 from rasterio.warp import transform_bounds
 from rio_stac import create_stac_item
@@ -432,6 +433,82 @@ def write_multiband_raster(composite, output_dir, output_name):
         dtype='float32',
     )
 
+def fix_broken_stac_items(items, rasterio_env):
+    """
+    Reads ground-truth projection metadata from each item's Fmask raster
+    and overwrites the STAC item and its data assets in-place if a mismatch
+    is detected. Returns the same (mutated) list of items.
+    """
+    logger.info("Checking and enforcing ground-truth projection metadata")
+    fixed_count = 0
+
+    def transforms_match(a, b):
+        if not a or not b or len(a) != len(b):
+            return False
+        return all(math.isclose(x, y, rel_tol=1e-9) for x, y in zip(a, b))
+
+    with rasterio.Env(**rasterio_env):
+        for item in items:
+            with rasterio.open(item.assets["Fmask"].href) as src:
+                raster_epsg = src.crs.to_epsg() if src.crs else None
+                raster_wkt = src.crs.to_wkt() if (src.crs and not raster_epsg) else None
+                raster_shape = list(src.shape)
+                t = src.transform
+                raster_transform = [t.a, t.b, t.c, t.d, t.e, t.f, 0.0, 0.0, 1.0]
+
+            proj_ext = ProjectionExtension.ext(item, add_if_missing=True)
+
+            stac_epsg = proj_ext.epsg
+            stac_wkt = getattr(proj_ext, "wkt2", None)
+
+            stac_shape = list(proj_ext.shape) if proj_ext.shape else None
+            stac_transform = proj_ext.transform
+
+            has_mismatch = (
+                (stac_epsg != raster_epsg) or
+                (stac_wkt != raster_wkt) or
+                (stac_shape != raster_shape) or
+                (not transforms_match(stac_transform, raster_transform)) or
+                (not stac_shape) or
+                (not stac_transform)
+            )
+
+            if has_mismatch:
+                fixed_count += 1
+                logger.debug(f"Fixing projection metadata for item: {item.id}")
+
+                item.properties.pop("proj:code", None)
+                item.properties.pop("proj:epsg", None)
+                item.properties.pop("proj:wkt2", None)
+
+                if raster_epsg:
+                    proj_ext.epsg = raster_epsg
+                else:
+                    proj_ext.wkt2 = raster_wkt
+                    proj_ext.epsg = None
+
+                proj_ext.shape = raster_shape
+                proj_ext.transform = raster_transform
+
+                for asset_key, asset in item.assets.items():
+                    has_proj_fields = any(k.startswith("proj:") for k in asset.extra_fields)
+                    if (asset.roles and "data" in asset.roles) or has_proj_fields:
+                        asset.extra_fields.pop("proj:code", None)
+                        asset.extra_fields.pop("proj:epsg", None)
+                        asset.extra_fields.pop("proj:wkt2", None)
+
+                        asset_proj = ProjectionExtension.ext(asset, add_if_missing=True)
+                        if raster_epsg:
+                            asset_proj.epsg = raster_epsg
+                        else:
+                            asset_proj.wkt2 = raster_wkt
+                            asset_proj.epsg = None
+
+                        asset_proj.shape = raster_shape
+                        asset_proj.transform = raster_transform
+
+    logger.info(f"Fixed projection metadata alignment for {fixed_count} items")
+    return items
 
 
 async def run(
@@ -488,22 +565,13 @@ async def run(
                 "region_name": "us-west-2",
             }
         )
+
         for item in items:
             for asset in item.assets.values():
                 if asset.href.startswith(URL_PREFIX):
                     asset.href = asset.href.replace(URL_PREFIX, "s3://")
 
-    logger.info("checking proj metadata")
-    fixed_count = 0
-    with rasterio.Env(**rasterio_env):
-        for item in items:
-            if (not item.ext.proj.shape) and (not item.ext.proj.transform):
-                fixed_count += 1
-                with rasterio.open(item.assets["Fmask"].href) as src:
-                    item.ext.proj.shape = src.shape
-                    item.ext.proj.transform = list(src.transform)
-
-    logger.info(f"fixed proj metadata for {fixed_count} items")
+    items = fix_broken_stac_items(items, rasterio_env)
 
     logger.info("loading into xarray via odc.stac")
     stack = odc.stac.load(
@@ -515,7 +583,6 @@ async def run(
         geobox=GeoBox.from_bbox(bbox=bbox, crs=crs, resolution=resolution, tight=True),
     ).sortby("time")
     logger.info(f"{stack.info()}\n{stack.chunk()}")
-
 
     stack = mask_and_scale(stack, bands)
 
