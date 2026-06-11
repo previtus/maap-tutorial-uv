@@ -1,0 +1,22 @@
+== NASA MAAP ==
+- follow instructions on https://docs.maap-project.org/en/latest/technical_tutorials/dps_tutorial/dps_tutorial_demo.html
+- here are notes for algorithm registration
+
+Repository URL:
+https://github.com/previtus/maap-tutorial-uv.git
+
+Repository Branch:
+main
+
+Run Command:
+maap-tutorial-uv/run.sh
+
+Build Command:
+maap-tutorial-uv/build-env.sh
+
+General Information
+Algorithm Name: vitek_tutorial_uv_v01
+Disk Space (GB): 5
+Resource Allocation: maap-dps-worker-8gb
+Container URL: ?
+    (we could try the smaller one?)
