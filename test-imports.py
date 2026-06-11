@@ -49,4 +49,11 @@ import segmentation_models_pytorch as smp
 print("About to import 'from osgeo import gdal'")
 from osgeo import gdal
 
+"""
+fails with:
+    from osgeo import gdal
+ModuleNotFoundError: No module named 'osgeo'
+(so gdal is not installed propely?)
+"""
+
 print("Passed all tested imports!")
