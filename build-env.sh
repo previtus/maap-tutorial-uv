@@ -16,7 +16,7 @@ source $HOME/.local/bin/env
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 
 # install dependencies
-UV_PROJECT=$basedir uv sync --no-dev --system
+UV_PROJECT=$basedir uv sync --no-dev
 UV_PROJECT=$basedir uv pip install gdal --system
 # fixing:
 # error: No virtual environment found; run `uv venv` to create an environment, or pass `--system` to install into a non-virtual environment
