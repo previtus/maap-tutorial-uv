@@ -20,3 +20,14 @@ Disk Space (GB): 5
 Resource Allocation: maap-dps-worker-8gb
 Container URL: ?
     (we could try the smaller one?)
+
+(maap base maybe leads to "Failed to build `gdal==3.13.1`")
+(trying pangeo now)
+
+
+/// build time:
+16 minutes 8 seconds
+
+- slow because we also had to use the pangeo source
+- slow because we are using gpu versions of torch libs
+=> imo not much speedup in contrast to the non-uv version
